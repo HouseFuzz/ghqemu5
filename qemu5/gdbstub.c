@@ -3313,11 +3313,26 @@ static int gdbserver_open_port(int port)
 
 int gdbserver_start(const char *port_or_path)
 {
+    // Patch by XHY
+    int auto_increment = 0;
+    if (port_or_path[0] == ':') {
+        port_or_path++;
+        auto_increment = 1;
+    }
+
     int port = g_ascii_strtoull(port_or_path, NULL, 10);
     int gdb_fd;
 
     if (port > 0) {
-        gdb_fd = gdbserver_open_port(port);
+        // Patch by XHY
+        do {
+            gdb_fd = gdbserver_open_port(port);
+            if (gdb_fd >= 0) {
+                printf("gdbserver listening on port %d\n", port);
+                break;
+            }
+            port++;
+        } while (auto_increment);
     } else {
         gdb_fd = gdbserver_open_socket(port_or_path);
     }

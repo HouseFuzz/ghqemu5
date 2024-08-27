@@ -1080,7 +1080,11 @@ static void handle_pending_signal(CPUArchState *cpu_env, int sig,
         print_taken_signal(sig, &k->info);
     }
 
-    if (handler == TARGET_SIG_DFL) {
+    // GREENHOUSE PATCH by XHY
+    if (hackhouse && sig == TARGET_SIGALRM) {
+        /* ignore sig */
+        fprintf(stderr, "[GreenHouseQEMU] Ignore SIG %d\n", sig);
+    } else if (handler == TARGET_SIG_DFL) {
         /* default handler : ignore some signal. The other are job control or fatal */
         if (sig == TARGET_SIGTSTP || sig == TARGET_SIGTTIN || sig == TARGET_SIGTTOU) {
             kill(getpid(),SIGSTOP);

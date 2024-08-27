@@ -1377,6 +1377,9 @@ tb_link_page(TranslationBlock *tb, tb_page_addr_t phys_pc,
     return tb;
 }
 
+extern char* exec_path;
+extern char* trace_progname;
+
 /* Called with mmap_lock held for user mode emulation.  */
 TranslationBlock *tb_gen_code(CPUState *cpu,
                               target_ulong pc, target_ulong cs_base,
@@ -1444,6 +1447,20 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     tcg_func_start(tcg_ctx);
 
     tcg_ctx->cpu = env_cpu(env);
+
+
+    if(trace_progname != NULL){
+        if(strstr(exec_path, trace_progname)){
+            char fname[0x20];
+            snprintf(fname, 0x20, "/%s_pc.txt",trace_progname); 
+            FILE* addr_fp = fopen(fname, "a+");
+            fprintf(addr_fp, "0x%1x\n", pc);
+            fclose(addr_fp);
+        }
+    }
+    
+
+
     gen_intermediate_code(cpu, tb, max_insns);
     assert(tb->size != 0);
     tcg_ctx->cpu = NULL;

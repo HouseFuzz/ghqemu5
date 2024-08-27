@@ -135,6 +135,7 @@
 #include "safe-syscall.h"
 #include "qemu/guest-random.h"
 #include "qemu/selfmap.h"
+#include "qemu/log.h"
 #include "user/syscall-trace.h"
 #include "qapi/error.h"
 #include "fd-trans.h"
@@ -142,6 +143,7 @@
 
 int used_ports[512] = {0}; /* GREENHOUSE FIRMFUCK PATCH */
 int ports_index = 0; /* GREENHOUSE FIRMFUCK PATCH */
+int thread_compat = 0; /* PATCH by xhy */
 
 #ifndef CLONE_IO
 #define CLONE_IO                0x80000000      /* Clone io context */
@@ -163,6 +165,9 @@ int ports_index = 0; /* GREENHOUSE FIRMFUCK PATCH */
 #define CLONE_THREAD_FLAGS                              \
     (CLONE_VM | CLONE_FS | CLONE_FILES |                \
      CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM)
+
+#define CLONE_THREAD_FLAGS_COMPAT                       \
+    (CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND)
 
 /* These flags are ignored:
  * CLONE_DETACHED is now ignored by the kernel;
@@ -2215,11 +2220,6 @@ static abi_long do_setsockopt(int sockfd, int level, int optname,
             }
             ret = get_errno(setsockopt(sockfd, level, optname,
                                        &val, sizeof(val)));
-            // GREENHOUSE PATCH
-            if (hackbind && ret != 0) {
-                 fprintf(stderr, "[qemu] Forcing setsockopt to return 0 even in failure cases [setsockopt(%d, %d, %d) = %d]\n", sockfd, level, optname, ret);
-                 ret = 0;
-             }
             break;
         case IPV6_PKTINFO:
         {
@@ -3884,7 +3884,13 @@ static abi_long do_socketcall(int num, abi_ulong vptr)
     case TARGET_SYS_SHUTDOWN: /* sockfd, how */
         return get_errno(shutdown(a[0], a[1]));
     case TARGET_SYS_SETSOCKOPT: /* sockfd, level, optname, optval, optlen */
-        return do_setsockopt(a[0], a[1], a[2], a[3], a[4]);
+        int ret = do_setsockopt(a[0], a[1], a[2], a[3], a[4]);
+        // GREENHOUSE PATCH
+        if (hackbind && ret != 0) {
+            fprintf(stderr, "[qemu] Forcing setsockopt to return 0 even in failure cases\n");
+            ret = 0;
+        }
+        return ret;
     case TARGET_SYS_GETSOCKOPT: /* sockfd, level, optname, optval, optlen */
         return do_getsockopt(a[0], a[1], a[2], a[3], a[4]);
     case TARGET_SYS_SENDMSG: /* sockfd, msg, flags */
@@ -5909,6 +5915,14 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
     int target_size;
     void *argptr;
 
+#ifdef TARGET_TIOCNOTTY
+    // GREENHOUSE PATCH by XHY
+    if (hackhouse && cmd == TARGET_TIOCNOTTY) {
+        /* Ignore TIOCNOTTY ioctl */
+        return 0;
+    }
+#endif
+
     ie = ioctl_entries;
     for(;;) {
         if (ie->target_cmd == 0) {
@@ -6581,6 +6595,15 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
         TaskState *parent_ts = (TaskState *)cpu->opaque;
         new_thread_info info;
         pthread_attr_t attr;
+
+        // Patch by XHY. Some old libpthread does not use
+        // CLONE_THREAD(<2.4.0) and CLONE_SYSVSEM(<2.5.10).
+        // We just add them to avoid the issue.
+        if ((flags & CLONE_THREAD_FLAGS_COMPAT) != CLONE_THREAD_FLAGS) {
+            flags |= CLONE_THREAD | CLONE_SYSVSEM;
+            // flags |= CLONE_SETTLS | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID;
+            thread_compat = 1;
+        }
 
         if (((flags & CLONE_THREAD_FLAGS) != CLONE_THREAD_FLAGS) ||
             (flags & CLONE_INVALID_THREAD_FLAGS)) {
@@ -8405,7 +8428,8 @@ static abi_long qemu_execve(char *filename, char *argv[],
     /* adapted from the kernel
      * https://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/tree/fs/binfmt_script.c
      */
-    if ((buf[0] == '#') && (buf[1] == '!')) {
+    // GREENHOUSE Patch by XHY: Disable this feature, which is handled by qemu-wrapper
+    if (0 && (buf[0] == '#') && (buf[1] == '!')) {
         /*
          * This section does the #! interpretation.
          * Sorta complicated, but hopefully it will work.  -TYT
@@ -8675,9 +8699,9 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
         // }
         // GREENHOUSE PATCH: disable closing for select files
         // fprintf(stderr, "[qemu] closing %d\n", (int)arg1);
-        if (is_qemu_logfile(arg1)) {
+        if (qemu_logfile && arg1 == fileno(qemu_logfile->fd)) {
             fprintf(stderr, "[qemu] not closing %d\n", (int)arg1);
-            return -1;
+            return 0;
         }
 
         fd_trans_unregister(arg1);
@@ -8843,7 +8867,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                 ret = get_errno(qemu_execve(p, argp, envp));   //GREENHOUSE_PATCH
             } else {                                           //GREENHOUSE_PATCH
                 ret = get_errno(safe_execve(p, argp, envp));   //GREENHOUSE_PATCH
-            }   
+            }
             
             unlock_user(p, arg1, 0);
 
@@ -10249,7 +10273,13 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 #endif
 #ifdef TARGET_NR_setsockopt
     case TARGET_NR_setsockopt:
-        return do_setsockopt(arg1, arg2, arg3, arg4, (socklen_t) arg5);
+        int ret = do_setsockopt(arg1, arg2, arg3, arg4, (socklen_t) arg5);
+        // GREENHOUSE PATCH
+        if (hackbind && ret != 0) {
+            fprintf(stderr, "[qemu] Forcing setsockopt to return 0 even in failure cases\n");
+            ret = 0;
+        }
+        return ret;
 #endif
 #if defined(TARGET_NR_syslog)
     case TARGET_NR_syslog:
@@ -13566,6 +13596,7 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 {
     CPUState *cpu = env_cpu(cpu_env);
     abi_long ret;
+    int no_return;
 
 #ifdef DEBUG_ERESTARTSYS
     /* Debug-only code for exercising the syscall-restart code paths
@@ -13581,19 +13612,38 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
     }
 #endif
 
+    no_return = 0;
+    if (qemu_execve_path && *qemu_execve_path && num == TARGET_NR_execve) {
+        no_return = 1;
+    }
+
     record_syscall_start(cpu, num, arg1,
                          arg2, arg3, arg4, arg5, arg6, arg7, arg8);
 
     if (unlikely(qemu_loglevel_mask(LOG_STRACE))) {
         print_syscall(cpu_env, num, arg1, arg2, arg3, arg4, arg5, arg6);
+
+        if (no_return) {
+            // execve will not return on success
+            // FIXME: reserve only one record
+            if (unlikely(qemu_loglevel_mask(LOG_STRACE))) {
+                print_syscall_ret(cpu_env, num, 0, arg1, arg2,
+                            arg3, arg4, arg5, arg6);
+            }
+            record_syscall_return(cpu, num, ret);
+        }
     }
 
     ret = do_syscall1(cpu_env, num, arg1, arg2, arg3, arg4,
                       arg5, arg6, arg7, arg8);
 
+    if (no_return) {
+        return ret;
+    }
+
     if (unlikely(qemu_loglevel_mask(LOG_STRACE))) {
         print_syscall_ret(cpu_env, num, ret, arg1, arg2,
-                          arg3, arg4, arg5, arg6);
+                        arg3, arg4, arg5, arg6);
     }
 
     record_syscall_return(cpu, num, ret);
