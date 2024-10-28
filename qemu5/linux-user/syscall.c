@@ -3268,8 +3268,15 @@ static abi_long do_bind(int sockfd, abi_ulong target_addr,
             port = ntohs(((struct sockaddr_in*)addr)->sin_port);
             fprintf(stderr, "[GreenHouseQEMU] IP: %s\n", ip);
             fprintf(stderr, "[GreenHouseQEMU] PORT: %hu\n", port);
+
+            /* HouseFuzz PATCH */
+            // if found 192.168.*.1, convert to 0.0.0.0
+            if (strncmp(ip, "192.168.", 8) == 0 && ip[strlen(ip)-1] == '1') {
+                goto hackbind_0000;
+            }
         }
         else if (((struct sockaddr*)addr)->sa_family == AF_INET6) {
+hackbind_0000:
             cust_addr = alloca(sizeof(struct sockaddr_in));
             /* GREENHOUSE PATCH */
             // forces a ipv6 bind address to ipv4
