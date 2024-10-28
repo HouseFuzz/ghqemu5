@@ -386,6 +386,51 @@ print_sockaddr(abi_ulong addr, abi_long addrlen, int last)
             qemu_log("}");
             break;
         }
+        case AF_INET6: {
+            struct target_sockaddr_in6 *in6 = (struct target_sockaddr_in6 *)sa;
+            uint8_t *c = (uint8_t *)&in6->sin6_addr;
+            qemu_log("{sin6_family=AF_INET6,sin6_port=htons(%d),",
+                     ntohs(in6->sin6_port));
+            // Check for IPv4-mapped IPv6 address
+            if (memcmp(c, "\0\0\0\0\0\0\0\0\0\0\0\0", 12) == 0) {
+                qemu_log("sin6_addr=inet_addr(\"%d.%d.%d.%d\")",
+                          c[0], c[1], c[2], c[3]);
+            } else {
+                // Iterating over hextets to find the largest sequence of zeros
+                char tmp[INET6_ADDRSTRLEN], *p;
+                int largest = -1, length = 0, current = -1, clength = 0;
+                for (int i = 0; i < 8; i++) {
+                    if (c[i*2] == 0 && c[i*2+1] == 0) {
+                        if (current == -1) {
+                            current = i; clength = 1;
+                        } else {
+                            clength++;
+                        }
+                    } else {
+                        if (current != -1 && clength > length) {
+                            largest = current; length = clength;
+                        }
+                        current = -1; clength = 0;
+                    }
+                }
+                if (current != -1 && clength > length) {
+                    largest = current; length = clength;
+                }
+                p = tmp;
+                for (int i = 0; i < 8; i++) {
+                    if (i == largest) {
+                        *p++ = ':'; *p++ = ':';
+                        i += length - 1;
+                        continue;
+                    }
+                    if (i != 0) *p++ = ':';
+                    p += sprintf(p, "%x", (c[i*2] << 8) | c[i*2+1]);
+                }
+                qemu_log("sin6_addr=inet_addr(\"%s\")", tmp);
+            }
+            qemu_log("}");
+            break;
+        }
         case AF_PACKET: {
             struct target_sockaddr_ll *ll = (struct target_sockaddr_ll *)sa;
             uint8_t *c = (uint8_t *)&ll->sll_addr;
